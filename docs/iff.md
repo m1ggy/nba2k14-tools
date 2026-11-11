@@ -92,6 +92,14 @@ Pixel data: VRAM at the resource's VRAM offset, full mip chain, linear.
 Verified visually for logos, uniforms (warmups, bump, spec) and floor detail maps.
 **Verified in-game:** a rebuilt `logo000.iff` with a replaced logo texture loads and shows in the 76ers team select (2026-11-11).
 
+### Textures inside scenes (`SCNE`)
+
+Scene data in DRAM contains texture records with the same layout; +0x74 holds
+(VRAM offset + 1) relative to the scene's VRAM offset. The record hash is the
+CRC32 of 2K's original source path (listed in the trailer). Court floors
+(`f###.iff`) expose all their art this way.
+**Verified in-game:** replacing the 76ers centre logo in `f000.iff` (installed via the mod manager) shows on the court (2026-11-11).
+
 **Exception: cyberfaces (`png####.iff`).** The texture data is packed back to
 back after the `hihead` mesh data, in an order that doesn't match the resource
 table. Its real location and format are probably given by the `SCNE`. Under investigation.
