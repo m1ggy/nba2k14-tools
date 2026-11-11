@@ -109,19 +109,52 @@ def make_face_texture(photo_rgb, template_rgba, strength=1.0, feather=0.035):
     t_mean, t_std = _skin_stats(t_lab, t_pts)
     p_mean, p_std = _skin_stats(w_lab, t_pts)
     recol = (t_lab - t_mean) * (p_std / t_std) + p_mean
-    base = _from_lab(t_lab + (recol - t_lab) * strength)
+    # recolour skin (face, ears, neck, chest) but not the hair above the forehead
+    hairline = t_pts[10][1]                      # top of the forehead
+    ramp = np.clip((yy - (hairline - 0.02 * th)) / (0.06 * th), 0, 1)
+    oval_core = gaussian_filter(_polygon_mask(tmpl.shape, t_pts[FACE_OVAL]), sigma=0.02 * tw)
+    t_skin = np.maximum(ramp, oval_core)[..., None]
+    base = _from_lab(t_lab + (recol - t_lab) * strength * t_skin)
 
     # 3. blend the warped face over the recoloured template
     oval = t_pts[FACE_OVAL]
     centre = oval.mean(0)
-    oval = centre + (oval - centre) * 0.97  # stay just inside the outline
+    oval = centre + (oval - centre) * 0.9  # stay inside the outline
     mask = _polygon_mask(tmpl.shape, oval) * inside
-    mask = gaussian_filter(mask, sigma=feather * tw)
-    mask = np.clip(mask * 1.15, 0, 1)[..., None]
+    # fade out warped pixels that aren't skin-like (photo background, hair at the edges)
+    dist = np.sqrt((((w_lab - p_mean) / (p_std * 2.5)) ** 2).sum(-1))
+    skin = np.clip(1.5 - dist, 0, 1)
+    skin = np.maximum(skin, _polygon_mask(tmpl.shape, centre + (oval - centre) * 0.6))  # always keep the core
+    mask = gaussian_filter(mask * skin, sigma=feather * tw)
+    mask = np.clip(mask * 1.2, 0, 1)[..., None]
     out = base.astype(np.float32) * (1 - mask) + warped.astype(np.float32) * mask
     rgba = tmpl.copy()
     rgba[..., :3] = np.clip(out + 0.5, 0, 255).astype(np.uint8)
     return rgba
+
+
+def rank_templates(photo_rgb, iff_paths, top=5):
+    """Rank face files as templates for a photo: similar skin tone, little beard."""
+    from .iff import IffFile
+    photo = np.asarray(photo_rgb)[..., :3].astype(np.uint8)
+    p_pts = landmarks(photo)
+    p_mean, _ = _skin_stats(_to_lab(photo), p_pts)
+    jaw = [152, 148, 377, 176, 400, 149, 378, 136, 365]
+    scored = []
+    for path in iff_paths:
+        try:
+            tex = next(t for t in T.textures(IffFile.load(path)) if t.name == "face_color")
+            img = tex.image()[..., :3]
+            lab, pts = _to_lab(img), landmarks(img)
+        except Exception:
+            continue
+        mean, _ = _skin_stats(lab, pts)
+        jaw_l = np.mean([lab[int(pts[i][1]) - 6:int(pts[i][1]) + 6, int(pts[i][0]) - 6:int(pts[i][0]) + 6, 0].mean()
+                         for i in jaw])
+        beard = max(mean[0] - jaw_l, 0)
+        scored.append((float(np.linalg.norm(mean - p_mean) + 0.8 * beard), path))
+    scored.sort()
+    return scored[:top]
 
 
 def apply_to_iff(iff, photo_rgb, **kw):
