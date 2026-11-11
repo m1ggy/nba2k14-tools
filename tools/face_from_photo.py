@@ -41,7 +41,7 @@ def main():
     except face.FaceError as e:
         raise SystemExit(f"Error: {e}")
     if args.preview:
-        Image.fromarray(img).save(args.preview)
+        Image.fromarray(img[..., :3]).save(args.preview)  # colour only; alpha is a shading mask
         print(f"preview: {args.preview}")
     if args.mod:
         out = os.path.join(mm.create(args.mod), base)
