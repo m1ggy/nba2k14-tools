@@ -120,5 +120,18 @@ is therefore known. Open questions:
 - `chest_color` decodes noisy in every order tried (format may differ from its record);
 - uncompressed textures (e.g. `hair_color`, A8R8G8B8) aren't listed in the placement table.
 
+Measured in `png0045.iff` (file offsets, found by matching downscaled images):
+
+| level | face_color | chest_color |
+|---|---|---|
+| 3 | 0x47C70 | 0x48C70 |
+| 2 | 0x4AD40 | ~0x4ED40 |
+| 1 | 0x57900 | 0x67900 |
+| 0 | 0x8A870 | 0xCA870 |
+
+So pieces are stored level by level (small to large), textures in table order
+within a level, with gaps between levels (other textures' pieces + padding,
+not yet modelled). Texture data starts ~0x46C20, after both head meshes.
+
 Uniforms (`uh###.iff`) have the same table, but their stored order equals the
 final order, so they decode directly.
