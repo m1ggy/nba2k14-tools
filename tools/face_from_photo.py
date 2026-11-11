@@ -27,6 +27,8 @@ def main():
     ap.add_argument("--mod", help="put the new face file into this mod")
     ap.add_argument("--preview", help="save the new face texture as PNG")
     ap.add_argument("--strength", type=float, default=1.0, help="skin tone matching, 0-1")
+    ap.add_argument("--skin", choices=["body", "photo"], default="body",
+                    help="body: keep the player's skin tone (matches his body in game); photo: use the photo's")
     args = ap.parse_args()
 
     mm = ModManager(check_game=False)
@@ -37,7 +39,7 @@ def main():
         raise SystemExit(f"Can't find {args.template}")
     iff = IffFile.load(src)
     try:
-        img = face.apply_to_iff(iff, face.load_photo(args.photo), strength=args.strength)
+        img = face.apply_to_iff(iff, face.load_photo(args.photo), strength=args.strength, skin=args.skin)
     except face.FaceError as e:
         raise SystemExit(f"Error: {e}")
     if args.preview:

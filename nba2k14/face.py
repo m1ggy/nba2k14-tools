@@ -87,8 +87,14 @@ def _skin_stats(lab, pts):
     return px.mean(0), px.std(0) + 1e-3
 
 
-def make_face_texture(photo_rgb, template_rgba, strength=1.0, feather=0.035):
-    """Return a new face_color RGBA image in the template's layout."""
+def make_face_texture(photo_rgb, template_rgba, strength=1.0, feather=0.035, skin="body"):
+    """Return a new face_color RGBA image in the template's layout.
+
+    skin="body"  (default) keep the template's skin tone, which matches the player's body
+                 in game, and shift the photo's face into it.
+    skin="photo" recolour the template toward the photo's skin (then the player's skin
+                 tone setting in the roster should be changed to match).
+    """
     photo = np.asarray(photo_rgb)[..., :3].astype(np.uint8)
     tmpl = np.asarray(template_rgba).astype(np.uint8)
     th, tw = tmpl.shape[:2]
@@ -108,13 +114,21 @@ def make_face_texture(photo_rgb, template_rgba, strength=1.0, feather=0.035):
     t_lab, w_lab = _to_lab(tmpl[..., :3]), _to_lab(warped)
     t_mean, t_std = _skin_stats(t_lab, t_pts)
     p_mean, p_std = _skin_stats(w_lab, t_pts)
-    recol = (t_lab - t_mean) * (p_std / t_std) + p_mean
-    # recolour skin (face, ears, neck, chest) but not the hair above the forehead
-    hairline = t_pts[10][1]                      # top of the forehead
-    ramp = np.clip((yy - (hairline - 0.02 * th)) / (0.06 * th), 0, 1)
-    oval_core = gaussian_filter(_polygon_mask(tmpl.shape, t_pts[FACE_OVAL]), sigma=0.02 * tw)
-    t_skin = np.maximum(ramp, oval_core)[..., None]
-    base = _from_lab(t_lab + (recol - t_lab) * strength * t_skin)
+    if skin == "body":
+        # move the photo's colours onto the template's skin tone (body stays consistent)
+        w_lab = (w_lab - p_mean) * (t_std / p_std) * np.array([0.9, 1, 1]) + t_mean
+        w_lab = w_lab * strength + _to_lab(warped) * (1 - strength)
+        warped = _from_lab(w_lab)
+        p_mean, p_std = t_mean, t_std
+        base = tmpl[..., :3]
+    else:
+        recol = (t_lab - t_mean) * (p_std / t_std) + p_mean
+        # recolour skin (face, ears, neck, chest) but not the hair above the forehead
+        hairline = t_pts[10][1]                      # top of the forehead
+        ramp = np.clip((yy - (hairline - 0.02 * th)) / (0.06 * th), 0, 1)
+        oval_core = gaussian_filter(_polygon_mask(tmpl.shape, t_pts[FACE_OVAL]), sigma=0.02 * tw)
+        t_skin = np.maximum(ramp, oval_core)[..., None]
+        base = _from_lab(t_lab + (recol - t_lab) * strength * t_skin)
 
     # 3. blend the warped face over the recoloured template
     oval = t_pts[FACE_OVAL]
