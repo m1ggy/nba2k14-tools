@@ -34,3 +34,21 @@ records. To be mapped with an in-game edit (move a player, diff the roster).
 ## Tools
 
 - `tools/rosdiff.py before.ROS after.ROS` - which bits changed, per player record.
+
+## The game's built-in rosters (`roster.iff`, `myteam_roster.iff`, `lebron_roster_*.iff`)
+
+`roster.iff` in the game folder is the vanilla 2013-14 roster that Play Now uses.
+Its DRAM chunk holds one `ROST` resource with the records in their **in-memory
+form**: byte-aligned, **484 bytes** per player, little-endian (1665 players).
+
+| Field | Byte | Format |
+|---|---|---|
+| Last name | +0 | u32 self-relative pointer to a UTF-16 string, stored as distance + 1 |
+| First name | +4 | same |
+| Height | +12 | float32 LE, cm |
+| Weight | +16 | float32 LE, lb |
+| Face (CF ID) | +28 | u16 LE (another field at +60 holds the same value; probably the portrait ID) |
+| Ratings | +384 | 42 bytes, same encoding as saves |
+
+Jersey and position aren't byte fields here (packed bits) and are not mapped yet.
+The Player Creator saves built-in roster edits as the mod "Roster Edits".

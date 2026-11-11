@@ -21,6 +21,8 @@ from nba2k14.roster import POSITIONS, Roster, height_text, rating_from_raw, raw_
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAVES = os.path.join(os.environ.get("APPDATA", ""), "2K Sports", "NBA 2K14", "Saves")
 FACE_MOD = "Player Faces"
+ROSTER_MOD = "Roster Edits"
+BUILT_IN = "Game roster (vanilla 2013-14)"
 FALLBACK_TEMPLATE = 1260
 
 
@@ -95,6 +97,7 @@ class App(tk.Tk):
                 ("Jersey", ttk.Spinbox(basics, from_=0, to=99, textvariable=self.jersey, width=6)),
                 ("Position", ttk.Combobox(basics, textvariable=self.position, values=POSITIONS, state="readonly",
                                           width=5))]
+        self.jersey_w, self.position_w = rows[2][1], rows[3][1]
         for i, (lab, w) in enumerate(rows):
             ttk.Label(basics, text=lab).grid(row=i, column=0, sticky="w", pady=2)
             w.grid(row=i, column=1, sticky="w", padx=6)
@@ -169,13 +172,19 @@ class App(tk.Tk):
         except OSError:
             files = []
         files.sort(key=lambda f: os.path.getmtime(os.path.join(SAVES, f)), reverse=True)
+        files = [BUILT_IN] + files
         self.file_combo["values"] = files
         if files and self.file_var.get() not in files:
             self.file_var.set(files[0])
             self.load_file()
 
+    def current_path(self):
+        if self.file_var.get() == BUILT_IN:
+            return os.path.join(DEFAULT_GAME_DIR, "roster.iff")
+        return os.path.join(SAVES, self.file_var.get())
+
     def load_file(self):
-        path = os.path.join(SAVES, self.file_var.get())
+        path = self.current_path()
         self.status.config(text="Loading players...")
         self.listbox.delete(0, "end")
 
@@ -206,9 +215,17 @@ class App(tk.Tk):
         self.height_in.set(round(p.get("height_cm") / 2.54))
         self.update_height_label()
         self.weight.set(round(p.get("weight_lb")))
-        self.jersey.set(p.get("jersey"))
-        pos = p.get("position")
-        self.position.set(POSITIONS[pos] if pos < 5 else "")
+        try:
+            self.jersey.set(p.get("jersey"))
+            pos = p.get("position")
+            self.position.set(POSITIONS[pos] if pos < 5 else "")
+            self.jersey_w.config(state="normal")
+            self.position_w.config(state="readonly")
+        except KeyError:  # not mapped for the built-in roster yet
+            self.jersey.set(0)
+            self.position.set("")
+            self.jersey_w.config(state="disabled")
+            self.position_w.config(state="disabled")
         self.face_id.set(p.get("face_id"))
         for v, raw in zip(self.rating_vars, p.ratings()):
             v.set(rating_from_raw(raw))
@@ -327,9 +344,10 @@ class App(tk.Tk):
                 p.set("height_cm", self.height_in.get() * 2.54)
             if self.weight.get() != round(p.get("weight_lb")):
                 p.set("weight_lb", float(self.weight.get()))
-            p.set("jersey", self.jersey.get())
-            if self.position.get() in POSITIONS:
-                p.set("position", POSITIONS.index(self.position.get()))
+            if str(self.jersey_w.cget("state")) != "disabled":
+                p.set("jersey", self.jersey.get())
+                if self.position.get() in POSITIONS:
+                    p.set("position", POSITIONS.index(self.position.get()))
             p.set("face_id", self.face_id.get())
             raws = p.ratings()
             for i, v in enumerate(self.rating_vars):
@@ -338,6 +356,19 @@ class App(tk.Tk):
             p.set_ratings(raws)
         except (tk.TclError, ValueError) as e:
             messagebox.showerror("Bad value", str(e))
+            return
+        if self.roster.built_in:
+            # never edit the game file directly: save the roster into a mod and install it
+            out = os.path.join(self.mm.create(ROSTER_MOD, "Edits to the game's built-in roster"), "roster.iff")
+            self.roster.save(path=out)
+            try:
+                self.mm.install(ROSTER_MOD, force=True)
+            except ModError as e:
+                messagebox.showerror("Install failed", str(e))
+                return
+            messagebox.showinfo("Saved", f"Saved {p.name} into mod '{ROSTER_MOD}' (installed).\n"
+                                         "The original roster is backed up; uninstall the mod to undo.\n"
+                                         "Play Now and new saves use it; existing saves keep their own league.")
             return
         bak = self.roster.save()
         messagebox.showinfo("Saved", f"Saved {p.name}.\nBackup: {os.path.basename(bak)}")

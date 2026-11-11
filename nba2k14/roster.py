@@ -129,15 +129,112 @@ class Player:
             put_bits(self.roster.data, self.anchor + RATINGS_OFFSET + 8 * i, 8, max(0, min(255, int(v))))
 
 
+STRUCT_RECORD = 484          # bytes per player in the game's built-in rosters (roster.iff etc.)
+STRUCT_FIELDS = {            # byte offset, struct format (little-endian)
+    "height_cm": (12, "<f"),
+    "weight_lb": (16, "<f"),
+    "face_id": (28, "<H"),
+}
+STRUCT_RATINGS = 384
+
+
+def _rel_ptr(data, pos):
+    """Self-relative 32-bit pointer stored as (distance + 1); returns the target or None."""
+    v = struct.unpack_from("<I", data, pos)[0]
+    if not v & 1:
+        return None
+    t = pos + v - 1
+    return t if 0 <= t < len(data) else None
+
+
+def _utf16_at(data, pos, limit=120):
+    end = pos
+    while end + 1 < len(data) and data[end:end + 2] != b"\0\0":
+        end += 2
+        if end - pos > limit:
+            return None
+    try:
+        s = bytes(data[pos:end]).decode("utf-16le")
+    except UnicodeDecodeError:
+        return None
+    return s if all(32 <= ord(c) < 0x2500 for c in s) else None
+
+
+class StructPlayer(Player):
+    """A player in the built-in roster layout: byte-aligned 484-byte records."""
+
+    def get(self, field):
+        if field not in STRUCT_FIELDS:
+            raise KeyError(f"{field} isn't mapped for built-in rosters yet")
+        off, fmt = STRUCT_FIELDS[field]
+        return struct.unpack_from(fmt, self.roster.data, self.anchor + off)[0]
+
+    def set(self, field, value):
+        if field not in STRUCT_FIELDS:
+            raise KeyError(f"{field} isn't mapped for built-in rosters yet")
+        off, fmt = STRUCT_FIELDS[field]
+        struct.pack_into(fmt, self.roster.data, self.anchor + off, float(value) if fmt == "<f" else int(value))
+
+    def ratings(self):
+        o = self.anchor + STRUCT_RATINGS
+        return list(self.roster.data[o:o + RATING_COUNT])
+
+    def set_ratings(self, raws):
+        o = self.anchor + STRUCT_RATINGS
+        self.roster.data[o:o + RATING_COUNT] = bytes(max(0, min(255, int(v))) for v in raws)
+
+
+def _scan_struct(roster):
+    """Find the 484-byte records: consecutive records whose first two words point to names."""
+    d = roster.data
+
+    def names_at(pos):
+        lt, ft = _rel_ptr(d, pos), _rel_ptr(d, pos + 4)
+        if lt is None or ft is None:
+            return None
+        last, first = _utf16_at(d, lt), _utf16_at(d, ft)
+        return (first, last) if last is not None and first is not None and (first or last) else None
+
+    start = None
+    for pos in range(0, min(len(d) - 3 * STRUCT_RECORD, 1 << 20), 4):
+        if names_at(pos) and names_at(pos + STRUCT_RECORD) and names_at(pos + 2 * STRUCT_RECORD):
+            start = pos
+            break
+    if start is None:
+        raise ValueError("No player records found in this built-in roster.")
+    players, i = [], 0
+    while start + (i + 1) * STRUCT_RECORD <= len(d):
+        pos = start + i * STRUCT_RECORD
+        n = names_at(pos)
+        if n is None:
+            break
+        players.append(StructPlayer(roster, i, pos, n[0], n[1]))
+        i += 1
+    return players
+
+
 class Roster:
     """A save or roster file with its player records."""
 
     def __init__(self, path):
         self.path = path
+        self.iff = None
+        if path.lower().endswith(".iff"):
+            # the game's built-in rosters (roster.iff etc.): one ROST resource in the DRAM chunk
+            from .iff import IffFile
+            self.iff = IffFile.load(path)
+            self.data = self.iff.chunk("DRAM").data
+            self.crc_ok = True
+            self.players = _scan_struct(self)
+            return
         with open(path, "rb") as f:
             self.data = bytearray(f.read())
         self.crc_ok = zlib.crc32(self.data[4:]) == struct.unpack(">I", self.data[:4])[0]
         self.players = self._scan()
+
+    @property
+    def built_in(self):
+        return self.iff is not None
 
     def _scan(self):
         """Try every bit alignment of the name tables (roster files use 5) and keep the best."""
@@ -200,7 +297,14 @@ class Roster:
         t = text.lower().strip()
         return [p for p in self.players if t in p.name.lower()]
 
-    def save(self, backup=True):
+    def save(self, backup=True, path=None):
+        """Write back (save files: checksum fixed). For .iff rosters pass `path` to write a copy
+        (e.g. into a mod) instead of the game file."""
+        if self.iff is not None:
+            self.iff.chunk("DRAM").modified = True
+            out = path or self.path
+            self.iff.save(out)
+            return None
         struct.pack_into(">I", self.data, 0, zlib.crc32(self.data[4:]))
         bak = None
         if backup:
