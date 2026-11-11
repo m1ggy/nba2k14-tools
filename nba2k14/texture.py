@@ -224,22 +224,31 @@ def encode(fmt, img, levels=None):
 
 # ---------------------------------------------------------------- iff glue
 class Texture:
-    """A TXTR resource inside an IffFile."""
+    """A TXTR resource inside an IffFile, or a texture embedded in a SCNE (scene).
 
-    def __init__(self, iff, resource):
-        if resource.type != "TXTR":
+    Texture records hold their VRAM location at +0x74 as (offset + 1), relative to
+    the owning resource's VRAM offset.
+    """
+
+    def __init__(self, iff, resource, record=None, label=None):
+        if record is None and resource.type != "TXTR":
             raise ValueError(f"{resource.name} is not a texture")
         self.iff = iff
         self.resource = resource
+        self.record = resource.offsets[0] if record is None else record
+        self.label = label
         dram = iff.chunk("DRAM").data
-        o = resource.offsets[0]
+        o = self.record
         self.format = bytes(dram[o + 8:o + 12])
         self.width, self.height = struct.unpack_from("<HH", dram, o + 0x68)
-        self.vram_offset = resource.offsets[1] if len(resource.offsets) > 1 else None
+        ptr = struct.unpack_from("<I", dram, o + 0x74)[0]
+        base = resource.offsets[1] if len(resource.offsets) > 1 else None
+        self.vram_offset = base + ptr - 1 if (base is not None and ptr & 1) else None
+        self.is_face = (iff.path or "").lower().replace("\\", "/").split("/")[-1].startswith("png")
 
     @property
     def name(self):
-        return self.resource.name
+        return self.label or self.resource.name
 
     @property
     def size(self):
@@ -247,7 +256,10 @@ class Texture:
 
     @property
     def editable(self):
-        return self.vram_offset is not None and self.format in SUPPORTED
+        # cyberface textures use a layout that isn't decoded yet (see docs/iff.md)
+        if self.is_face or self.vram_offset is None or self.format not in SUPPORTED:
+            return False
+        return self.vram_offset + self.size <= len(self.iff.chunk("VRAM").data)
 
     def image(self):
         vram = self.iff.chunk("VRAM").data
@@ -268,5 +280,39 @@ class Texture:
         self.iff.chunk("VRAM").modified = True
 
 
+def _scene_records(iff, scene):
+    """DRAM offsets of texture records inside a scene's DRAM range."""
+    dram = bytes(iff.chunk("DRAM").data)
+    start = scene.offsets[0]
+    later = [r.offsets[0] for r in iff.resources if r.offsets and r.offsets[0] > start]
+    end = min(later) if later else len(dram)
+    found = []
+    pos = start
+    while True:
+        i = min((p for p in (dram.find(DXT1, pos, end), dram.find(DXT5, pos, end)) if p >= 0), default=-1)
+        if i < 0:
+            return found
+        rec = i - 8
+        if rec >= start and dram[i + 20:i + 24] == dram[i:i + 4] and struct.unpack_from("<I", dram, rec + 0x74)[0] & 1:
+            found.append(rec)
+        pos = i + 4
+
+
 def textures(iff):
-    return [Texture(iff, r) for r in iff.resources if r.type == "TXTR"]
+    """All textures: standalone TXTR resources, then textures embedded in scenes
+    (named '<scene>#<n>' plus the record's name when the file lists it)."""
+    out = [Texture(iff, r) for r in iff.resources if r.type == "TXTR"]
+    if iff.chunk("VRAM") is None:
+        return out
+    dram = iff.chunk("DRAM").data
+    for scene in iff.resources:
+        if scene.type != "SCNE" or len(scene.offsets) < 2:
+            continue
+        for n, rec in enumerate(_scene_records(iff, scene)):
+            h = struct.unpack_from("<I", dram, rec)[0]
+            extra = iff.names.get(h)
+            if extra:
+                extra = extra.replace("\\", "/").split("/")[-1]
+            label = f"{scene.name}#{n}" + (f" {extra}" if extra else "")
+            out.append(Texture(iff, scene, record=rec, label=label))
+    return out
