@@ -100,6 +100,25 @@ CRC32 of 2K's original source path (listed in the trailer). Court floors
 (`f###.iff`) expose all their art this way.
 **Verified in-game:** replacing the 76ers centre logo in `f000.iff` (installed via the mod manager) shows on the court (2026-11-11).
 
-**Exception: cyberfaces (`png####.iff`).** The texture data is packed back to
-back after the `hihead` mesh data, in an order that doesn't match the resource
-table. Its real location and format are probably given by the `SCNE`. Under investigation.
+**Exception: cyberfaces (`png####.iff`) - partly solved.**
+
+The header words between the chunk table and the resource table are a **mip
+placement table**:
+
+```
+u32 count, u32 hash, u32 0, then count x (u32 code, u32 final VRAM offset)
+code = (size_in_bytes << 10) | 0x80 | mip_level      (level 0x9F = packed mip tail)
+```
+
+The final (virtual) VRAM layout is linear and matches the resource table, but
+in face files the stored VRAM chunk is **not** in final order: after the
+`hihead` data, the mip pieces are stored grouped by level (tails, level 3, 2,
+1, then level 0), and the `lohead` data follows them. Each level group's start
+is therefore known. Open questions:
+
+- the order of pieces *within* a level group (the table order fits two of four textures);
+- `chest_color` decodes noisy in every order tried (format may differ from its record);
+- uncompressed textures (e.g. `hair_color`, A8R8G8B8) aren't listed in the placement table.
+
+Uniforms (`uh###.iff`) have the same table, but their stored order equals the
+final order, so they decode directly.
