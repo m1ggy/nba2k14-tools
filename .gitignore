@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.old
+*.bak
+
+# personal settings written by the apps
+live_sliders.json
+
+# exported roster data (from a community roster, not ours to publish)
+roster*_players.csv
+*.csv
