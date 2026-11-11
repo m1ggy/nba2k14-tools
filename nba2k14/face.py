@@ -87,30 +87,55 @@ def _skin_stats(lab, pts):
     return px.mean(0), px.std(0) + 1e-3
 
 
-def make_face_texture(photo_rgb, template_rgba, strength=1.0, feather=0.035, skin="body"):
+def _extend_top(pts, factor):
+    """Extra points above the forehead (scalp / hairline), pushed out from the face centre."""
+    oval = pts[FACE_OVAL]
+    centre = oval.mean(0)
+    eye_y = (pts[33][1] + pts[263][1]) / 2
+    top = oval[oval[:, 1] < eye_y]
+    return centre + (top - centre) * factor
+
+
+def make_face_texture(photo_rgb, template_rgba, strength=1.0, feather=0.035, skin="body", hair=True,
+                      return_mask=False):
     """Return a new face_color RGBA image in the template's layout.
 
     skin="body"  (default) keep the template's skin tone, which matches the player's body
                  in game, and shift the photo's face into it.
     skin="photo" recolour the template toward the photo's skin (then the player's skin
                  tone setting in the roster should be changed to match).
+    hair=True    also paint the photo's hairline / scalp above the forehead.
+    return_mask  also return the blend mask (0-1, template size) of the replaced area.
     """
     photo = np.asarray(photo_rgb)[..., :3].astype(np.uint8)
     tmpl = np.asarray(template_rgba).astype(np.uint8)
     th, tw = tmpl.shape[:2]
+    ph, pw = photo.shape[:2]
     p_pts = landmarks(photo)
     t_pts = landmarks(tmpl[..., :3])
+    src_pts, dst_pts = p_pts, t_pts
+    eye_y_t = (t_pts[33][1] + t_pts[263][1]) / 2
+    if hair:
+        p_ext = _extend_top(p_pts, 1.45)
+        t_ext = _extend_top(t_pts, 1.45)
+        p_ext[:, 0] = np.clip(p_ext[:, 0], 0, pw - 1)
+        p_ext[:, 1] = np.clip(p_ext[:, 1], 0, ph - 1)
+        t_ext[:, 0] = np.clip(t_ext[:, 0], 0, tw - 1)
+        t_ext[:, 1] = np.clip(t_ext[:, 1], 0, th - 1)
+        src_pts = np.concatenate([p_pts, p_ext])
+        dst_pts = np.concatenate([t_pts, t_ext])
 
     # 1. warp: for every template pixel, where to sample the photo
-    interp = LinearNDInterpolator(t_pts, p_pts)
+    interp = LinearNDInterpolator(dst_pts, src_pts)
     yy, xx = np.mgrid[0:th, 0:tw].astype(np.float32)
     mapped = interp(np.stack([xx.ravel(), yy.ravel()], -1)).reshape(th, tw, 2).astype(np.float32)
     inside = ~np.isnan(mapped[..., 0])
     mapped[~inside] = 0
     from cv2 import BORDER_REFLECT, INTER_LINEAR, remap
     warped = remap(photo, mapped[..., 0], mapped[..., 1], INTER_LINEAR, borderMode=BORDER_REFLECT)
+    raw_warped = warped.copy()
 
-    # 2. skin tone: move the whole template toward the photo's skin colour
+    # 2. skin tone
     t_lab, w_lab = _to_lab(tmpl[..., :3]), _to_lab(warped)
     t_mean, t_std = _skin_stats(t_lab, t_pts)
     p_mean, p_std = _skin_stats(w_lab, t_pts)
@@ -124,27 +149,54 @@ def make_face_texture(photo_rgb, template_rgba, strength=1.0, feather=0.035, ski
     else:
         recol = (t_lab - t_mean) * (p_std / t_std) + p_mean
         # recolour skin (face, ears, neck, chest) but not the hair above the forehead
-        hairline = t_pts[10][1]                      # top of the forehead
+        hairline = t_pts[10][1]
         ramp = np.clip((yy - (hairline - 0.02 * th)) / (0.06 * th), 0, 1)
         oval_core = gaussian_filter(_polygon_mask(tmpl.shape, t_pts[FACE_OVAL]), sigma=0.02 * tw)
         t_skin = np.maximum(ramp, oval_core)[..., None]
         base = _from_lab(t_lab + (recol - t_lab) * strength * t_skin)
 
-    # 3. blend the warped face over the recoloured template
+    # 3. face mask: inside the outline, skin-like pixels only
     oval = t_pts[FACE_OVAL]
     centre = oval.mean(0)
-    oval = centre + (oval - centre) * 0.9  # stay inside the outline
-    mask = _polygon_mask(tmpl.shape, oval) * inside
-    # fade out warped pixels that aren't skin-like (photo background, hair at the edges)
+    oval = centre + (oval - centre) * 0.9
+    face_mask = _polygon_mask(tmpl.shape, oval) * inside
     dist = np.sqrt((((w_lab - p_mean) / (p_std * 2.5)) ** 2).sum(-1))
-    skin = np.clip(1.5 - dist, 0, 1)
-    skin = np.maximum(skin, _polygon_mask(tmpl.shape, centre + (oval - centre) * 0.6))  # always keep the core
-    mask = gaussian_filter(mask * skin, sigma=feather * tw)
-    mask = np.clip(mask * 1.2, 0, 1)[..., None]
-    out = base.astype(np.float32) * (1 - mask) + warped.astype(np.float32) * mask
+    skinlike = np.clip(1.5 - dist, 0, 1)
+    skinlike = np.maximum(skinlike, _polygon_mask(tmpl.shape, centre + (oval - centre) * 0.6))
+    face_mask = np.clip(gaussian_filter(face_mask * skinlike, sigma=feather * tw) * 1.2, 0, 1)
+    out = base.astype(np.float32) * (1 - face_mask[..., None]) + warped.astype(np.float32) * face_mask[..., None]
+
+    # 4. hair: the photo's scalp / hairline above the forehead, in its own colours
+    hair_mask = np.zeros_like(face_mask)
+    if hair:
+        top_oval = t_pts[FACE_OVAL][t_pts[FACE_OVAL][:, 1] < eye_y_t]
+        ring = np.concatenate([t_ext, top_oval[::-1]])
+        hair_mask = _polygon_mask(tmpl.shape, ring) * inside * (1 - face_mask)
+        # keep the photo's background out: the colour of the photo's border = background
+        border = np.concatenate([photo[:6].reshape(-1, 3), photo[-6:].reshape(-1, 3),
+                                 photo[:, :6].reshape(-1, 3), photo[:, -6:].reshape(-1, 3)]).astype(np.float32)
+        bg = np.median(border, 0)
+        bg_dist = np.sqrt(((raw_warped.astype(np.float32) - bg) ** 2).sum(-1))
+        hair_mask *= np.clip((bg_dist - 40) / 40, 0, 1)
+        hair_mask = np.clip(gaussian_filter(hair_mask, sigma=feather * tw) * 1.2, 0, 1)
+        hair_mask *= np.clip((bg_dist - 70) / 50, 0, 1)  # again after blurring: no background halo
+        out = out * (1 - hair_mask[..., None]) + raw_warped.astype(np.float32) * hair_mask[..., None]
+
     rgba = tmpl.copy()
     rgba[..., :3] = np.clip(out + 0.5, 0, 255).astype(np.uint8)
+    if return_mask:
+        return rgba, np.maximum(face_mask, hair_mask)
     return rgba
+
+
+def _flatten(img, mask, sigma):
+    """Inside the mask, replace detail with a heavy blur (removes the template's features)."""
+    from cv2 import INTER_LINEAR, resize
+    h, w = img.shape[:2]
+    m = resize(mask.astype(np.float32), (w, h), interpolation=INTER_LINEAR)[..., None]
+    f = img.astype(np.float32)
+    blur = np.stack([gaussian_filter(f[..., c], sigma=sigma * w) for c in range(f.shape[2])], -1)
+    return np.clip(f * (1 - m) + blur * m + 0.5, 0, 255).astype(np.uint8)
 
 
 def rank_templates(photo_rgb, iff_paths, top=5):
@@ -171,13 +223,24 @@ def rank_templates(photo_rgb, iff_paths, top=5):
     return scored[:top]
 
 
-def apply_to_iff(iff, photo_rgb, **kw):
-    """Put a photo-made face_color into an IffFile (in memory). Returns the new texture image."""
-    tex = next((t for t in T.textures(iff) if t.name == "face_color"), None)
+def apply_to_iff(iff, photo_rgb, flatten=True, **kw):
+    """Put a photo-made face into an IffFile (in memory). Returns the new face_color image.
+
+    flatten=True also smooths the template's own features out of its normal map and
+    shading (occlusion) map inside the replaced area, so the lighting doesn't redraw
+    the old face on top of the new one.
+    """
+    texs = {t.name: t for t in T.textures(iff)}
+    tex = texs.get("face_color")
     if tex is None or not tex.editable:
         raise FaceError("This file has no editable face_color texture.")
-    img = make_face_texture(photo_rgb, tex.image(), **kw)
+    img, mask = make_face_texture(photo_rgb, tex.image(), return_mask=True, **kw)
     tex.set_image(img)
+    if flatten:
+        for name in ("face_normal", "face_occlusion"):
+            t = texs.get(name)
+            if t is not None and t.editable:
+                t.set_image(_flatten(t.image(), mask, sigma=0.03))
     return img
 
 
