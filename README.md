@@ -33,6 +33,17 @@ Don't change the **Game Style** in the game's menu afterwards, it can replace yo
 
 The app checks the game version before touching memory and does nothing on an unknown build.
 
+## Modding toolkit (in progress, see ROADMAP.md)
+
+- `tools/iffdump.py` - list what's inside any `.iff` game file.
+- `tools/textures.py` - export textures (logos, courts, uniforms, faces) to PNG and import edited PNGs into a mod.
+- `tools/modmgr.py` - install / uninstall mods; original game files are backed up in `modmanager/backups`.
+- `tools/face_from_photo.py` - make a cyberface texture from a front-facing photo.
+
+Setup for the toolkit: `python -m pip install --user -r requirements.txt`, and for faces
+download the MediaPipe face model into `models/`:
+`curl -L -o models/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`
+
 ## Ratings Tool
 
 - **My Player tab:** `MAX MY PLAYER` sets all ratings and caps to the maximum; or edit each rating.

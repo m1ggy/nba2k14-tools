@@ -12,3 +12,6 @@ roster*_players.csv
 
 # mod manager data (your mods, backups of original game files)
 modmanager/
+
+# downloaded model files (see README)
+models/

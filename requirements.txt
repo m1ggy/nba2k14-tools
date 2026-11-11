@@ -1,0 +1,6 @@
+numpy
+Pillow
+scipy
+# face from photo
+mediapipe
+opencv-python
