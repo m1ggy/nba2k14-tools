@@ -100,38 +100,26 @@ CRC32 of 2K's original source path (listed in the trailer). Court floors
 (`f###.iff`) expose all their art this way.
 **Verified in-game:** replacing the 76ers centre logo in `f000.iff` (installed via the mod manager) shows on the court (2026-11-11).
 
-**Exception: cyberfaces (`png####.iff`) - partly solved.**
+### VRAM placement table (faces, uniforms and others) - SOLVED
 
-The header words between the chunk table and the resource table are a **mip
-placement table**:
+Right after the chunk table some files have a **placement table** for the VRAM chunk:
 
 ```
-u32 count, u32 hash, u32 0, then count x (u32 code, u32 final VRAM offset)
-code = (size_in_bytes << 10) | 0x80 | mip_level      (level 0x9F = packed mip tail)
+u32 count, then count x (u32 code, u32 final offset)
+code = (size_in_bytes << 10) | kind
+kind = 0x80 + mip level | 0x9F mip tail | 0xBF raw data (e.g. head meshes)
 ```
 
-The final (virtual) VRAM layout is linear and matches the resource table, but
-in face files the stored VRAM chunk is **not** in final order: after the
-`hihead` data, the mip pieces are stored grouped by level (tails, level 3, 2,
-1, then level 0), and the `lohead` data follows them. Each level group's start
-is therefore known. Open questions:
+The VRAM chunk stores the pieces **back to back in table order** (typically:
+mesh block, all mip tails, all level 3s, ..., all level 0s). The game moves each
+piece to its final offset; all resource and texture offsets refer to that final
+layout. Sizes sum exactly to the stored chunk size. Files without the table
+(logos, floors) store VRAM in final order already. `IffFile.vram_view()` gives
+the final layout and `build()` repacks it.
 
-- the order of pieces *within* a level group (the table order fits two of four textures);
-- `chest_color` decodes noisy in every order tried (format may differ from its record);
-- uncompressed textures (e.g. `hair_color`, A8R8G8B8) aren't listed in the placement table.
+Found by matching face file data against the running game's memory (each
+texture sits in memory as a normal linear mip chain).
+**Verified in-game:** striped `face_color` in 12 cyberfaces shows on the players (2026-11-11).
 
-Measured in `png0045.iff` (file offsets, found by matching downscaled images):
-
-| level | face_color | chest_color |
-|---|---|---|
-| 3 | 0x47C70 | 0x48C70 |
-| 2 | 0x4AD40 | ~0x4ED40 |
-| 1 | 0x57900 | 0x67900 |
-| 0 | 0x8A870 | 0xCA870 |
-
-So pieces are stored level by level (small to large), textures in table order
-within a level, with gaps between levels (other textures' pieces + padding,
-not yet modelled). Texture data starts ~0x46C20, after both head meshes.
-
-Uniforms (`uh###.iff`) have the same table, but their stored order equals the
-final order, so they decode directly.
+Note: in uniforms, `unifspec` / `shortspec` hold the jersey and shorts colour
+art, and `unifbump` / `shortbump` are normal maps.

@@ -30,6 +30,14 @@ def check(path):
         return "resources/trailer changed"
     if f.resource_count and not f.resources:
         return "resource table not parsed"
+    # 3. VRAM placement: unpack to final layout and repack gives the stored bytes back
+    if f.placement:
+        h = IffFile(f.raw)
+        stored = bytes(h.chunk("VRAM").data)
+        h.vram_view()
+        h.commit_vram_view()
+        if bytes(h.chunk("VRAM").data) != stored:
+            return "placement repack differs"
     return None
 
 
@@ -38,7 +46,7 @@ def main():
     if len(sys.argv) > 1:
         files = files[:int(sys.argv[1])]
     t0 = time.time()
-    bad, not_iff, unnamed = [], 0, 0
+    bad, not_iff, placed = [], 0, 0
     for i, p in enumerate(files):
         try:
             err = check(p)
@@ -49,10 +57,12 @@ def main():
             err = f"{type(e).__name__}: {e}"
         if err:
             bad.append((os.path.basename(p), err))
+        elif IffFile.load(p).placement:
+            placed += 1
         if (i + 1) % 500 == 0:
             print(f"  {i + 1}/{len(files)} ...", flush=True)
     print(f"{len(files)} files in {time.time() - t0:.0f}s: {len(files) - len(bad) - not_iff} OK, "
-          f"{len(bad)} failed, {not_iff} other formats")
+          f"{len(bad)} failed, {not_iff} other formats; {placed} use a VRAM placement table")
     for name, err in bad[:30]:
         print(f"  FAIL {name}: {err}")
     return 1 if bad else 0

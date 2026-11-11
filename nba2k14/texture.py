@@ -244,7 +244,6 @@ class Texture:
         ptr = struct.unpack_from("<I", dram, o + 0x74)[0]
         base = resource.offsets[1] if len(resource.offsets) > 1 else None
         self.vram_offset = base + ptr - 1 if (base is not None and ptr & 1) else None
-        self.is_face = (iff.path or "").lower().replace("\\", "/").split("/")[-1].startswith("png")
 
     @property
     def name(self):
@@ -256,13 +255,12 @@ class Texture:
 
     @property
     def editable(self):
-        # cyberface textures use a layout that isn't decoded yet (see docs/iff.md)
-        if self.is_face or self.vram_offset is None or self.format not in SUPPORTED:
+        if self.vram_offset is None or self.format not in SUPPORTED:
             return False
-        return self.vram_offset + self.size <= len(self.iff.chunk("VRAM").data)
+        return self.vram_offset + self.size <= len(self.iff.vram_view())
 
     def image(self):
-        vram = self.iff.chunk("VRAM").data
+        vram = self.iff.vram_view()
         return decode(self.format, self.width, self.height, vram[self.vram_offset:self.vram_offset + self.size])
 
     def set_image(self, img):
@@ -272,12 +270,15 @@ class Texture:
         if img.shape[2] == 3:
             img = np.concatenate([img, np.full(img.shape[:2] + (1,), 255, np.uint8)], -1)
         data = encode(self.format, img)
-        vram = self.iff.chunk("VRAM").data
+        vram = self.iff.vram_view()
         end = self.vram_offset + len(data)
         if end > len(vram):
             raise ValueError("texture data runs past the end of VRAM")
         vram[self.vram_offset:end] = data
-        self.iff.chunk("VRAM").modified = True
+        if self.iff.placement:
+            self.iff.vram_dirty = True
+        else:
+            self.iff.chunk("VRAM").modified = True
 
 
 def _scene_records(iff, scene):

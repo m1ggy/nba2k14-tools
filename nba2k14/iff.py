@@ -128,6 +128,65 @@ class IffFile:
         for r in self.resources:
             r.name = self.names.get(r.name_hash)
             r.type = self.names.get(r.type_hash)
+        self.placement = self._parse_placement()
+        self._virtual = None
+        self.vram_dirty = False  # set when vram_view() was edited
+
+    def _parse_placement(self):
+        """VRAM placement table: count, then (code, final offset) pairs, right after the chunk table.
+
+        code = (size << 10) | kind, kind 0x80+level for a mip level, 0x9F for a mip tail,
+        0xBF for raw data (meshes). The VRAM chunk stores the pieces back to back in
+        table order; the game moves each to its final offset. Returns [] when absent.
+        """
+        vram = self.chunk("VRAM")
+        if vram is None:
+            return []
+        d = self.raw
+        pos = 32 + 32 * self.chunk_count
+        end = self.resources[0].entry_offset if self.resources else self.header_size
+        if pos + 4 > end:
+            return []
+        n = struct.unpack_from("<I", d, pos)[0]
+        if n == 0 or pos + 4 + 8 * n > end:
+            return []
+        pairs = [struct.unpack_from("<II", d, pos + 4 + 8 * i) for i in range(n)]
+        if not all(code & 0x80 for code, _ in pairs):
+            return []
+        if sum(code >> 10 for code, _ in pairs) != len(vram.data):
+            return []
+        return pairs
+
+    # ----- VRAM in final (as-loaded) layout -----
+    def vram_view(self):
+        """VRAM data with every piece at its final offset (what texture/mesh offsets refer to)."""
+        if self._virtual is None:
+            stored = self.chunk("VRAM").data
+            if not self.placement:
+                self._virtual = stored  # stored in final order already
+            else:
+                size = max(off + (code >> 10) for code, off in self.placement)
+                view = bytearray(max(size, self.chunk("VRAM").alloc_size))
+                p = 0
+                for code, off in self.placement:
+                    n = code >> 10
+                    view[off:off + n] = stored[p:p + n]
+                    p += n
+                self._virtual = view
+        return self._virtual
+
+    def commit_vram_view(self):
+        """Write edits made through vram_view() back into the stored (table-ordered) chunk."""
+        if self._virtual is None:
+            return
+        vram = self.chunk("VRAM")
+        if not self.placement:
+            vram.modified = True
+            return
+        out = bytearray()
+        for code, off in self.placement:
+            out += self._virtual[off:off + (code >> 10)]
+        vram.data = out
 
     def _read_names(self):
         names = {}
@@ -182,6 +241,9 @@ class IffFile:
     # ----- writing -----
     def build(self):
         """Return the file bytes. Unchanged chunks are copied byte-for-byte."""
+        if self.vram_dirty:
+            self.commit_vram_view()
+            self.vram_dirty = False
         header = bytearray(self.raw[:self.header_size])
         body = bytearray()
         pos = self.header_size
